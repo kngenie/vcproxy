@@ -98,7 +98,7 @@ if __name__ == '__main__':
     op.add_option('-v', '--verbose', action='store_const', dest='loglevel',
                   const=logging.DEBUG,
                   default=logging.ERROR,
-                  help='enabled DEBUG-level logging (default ERROR)')
+                  help='enables DEBUG-level logging (default ERROR)')
     
     options, args = op.parse_args()
 
