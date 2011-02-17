@@ -1,0 +1,100 @@
+#!/usr/bin/python
+#
+# FLV capture based on Jonas Wagner's HTTPRipper
+
+import os, sys, re
+import prox
+from datetime import datetime
+from Queue import Queue, Empty
+import logging
+import threading
+import warcwriter
+
+class Tee(object):
+    """A filelike that writes it's data to two others"""
+    def __init__(self, f1, f2):
+        self.f1 = f1
+        self.f2 = f2
+
+    def write(self, data):
+        self.f1.write(data)
+        self.f2.write(data)
+
+def capture(url):
+    m = re.match(r'http://proxy.api.video.yahoo.com/videoAPI/.*/Video\.([a-zA-Z0-9]+)\?.*\&ID=(\d+)', url)
+    if m:
+        return (m.group(2), m.group(1))
+    m = re.match(r'http://video.yahoo.com/ws/.*', url)
+    if m:
+        return ()
+        
+class HTTPProxyHandler(prox.HTTPProxyHandler):
+    def forward_request_body(self, f1, f2, contentlength):
+        if contentlength is not None:
+            self.ww = self.server.get_writer()
+            f3 = self.ww.start_request(self.requestheaders, contentlength,
+                                       uri=self.url)
+            f2 = Tee(f2, f3)
+        else:
+            self.ww = None
+        self.forward(f1, f2, contentlength)
+        if self.ww:
+            f3.write('\r\n'*4)
+            f3.close()
+        
+    def forward_response_body(self, f1, f2, contentlength):
+        '''forwards the content to the client and saves video streams in
+        level-0 compression WARC file'''
+        ct = self.responseheaders.get('Content-Type')
+        if ct: ct = ct[0]
+        if contentlength is not None and ct and ct.startswith('video/flash'):
+            if not hasattr(self, 'ww') or self.ww is None:
+                self.ww = self.server.get_writer()
+            f3 = self.ww.start_response(self.responseheaders, contentlength,
+                                        compresslevel=0,
+                                        uri=self.url)
+            f2 = Tee(f2, f3)
+        else:
+            self.ww = None
+        self.forward(f1, f2, contentlength)
+        if self.ww:
+            f3.write('\r\n'*4)
+            f3.close()
+            self.server.put_writer(self.ww)
+            self.ww = None
+
+class HTTPProxyServer(prox.HTTPProxyServer):
+    def __init__(self):
+        prox.HTTPProxyServer.__init__(self, ("0.0.0.0", 8080),
+                                      HTTPProxyHandler)
+        self.writers_lock = threading.RLock()
+        self.writers = []
+        self.writers_queue = Queue()
+
+    def get_writer(self):
+        # wait 50ms
+        try:
+            return self.writers_queue.get(True, 0.05)
+        except Empty:
+            with self.writers_lock:
+                w = warcwriter.open('%s-%s-%04d' % ('res', os.getpid(),
+                                                    len(self.writers)))
+                self.writers.append(w)
+                return w
+    def put_writer(self, w):
+        self.writers_queue.put(w)
+
+    def close_writers(self):
+        for w in self.writers:
+            w.close()
+
+if __name__ == '__main__':
+    loglevel = 'DEBUG' in sys.argv and logging.DEBUG or logging.ERROR
+    logging.basicConfig(level=loglevel)
+
+    server = HTTPProxyServer()
+    try:
+        server.serve_forever()
+    finally:
+        server.close_writers()
+
