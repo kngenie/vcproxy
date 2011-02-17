@@ -64,9 +64,10 @@ class HTTPProxyHandler(prox.HTTPProxyHandler):
             self.ww = None
 
 class HTTPProxyServer(prox.HTTPProxyServer):
-    def __init__(self):
+    def __init__(self, prefix='res'):
         prox.HTTPProxyServer.__init__(self, ("0.0.0.0", 8080),
                                       HTTPProxyHandler)
+        self.prefix = prefix
         self.writers_lock = threading.RLock()
         self.writers = []
         self.writers_queue = Queue()
@@ -77,7 +78,7 @@ class HTTPProxyServer(prox.HTTPProxyServer):
             return self.writers_queue.get(True, 0.05)
         except Empty:
             with self.writers_lock:
-                w = warcwriter.open('%s-%s-%04d' % ('res', os.getpid(),
+                w = warcwriter.open('%s-%s-%04d' % (self.prefix, os.getpid(),
                                                     len(self.writers)))
                 self.writers.append(w)
                 return w
@@ -89,10 +90,21 @@ class HTTPProxyServer(prox.HTTPProxyServer):
             w.close()
 
 if __name__ == '__main__':
-    loglevel = 'DEBUG' in sys.argv and logging.DEBUG or logging.ERROR
-    logging.basicConfig(level=loglevel)
+    from optparse import OptionParser
+    op = OptionParser()
+    op.add_option('-p', '--prefix', action='store', dest='prefix',
+                  help='prefix (first string before "-PID-THREAD-...") '
+                  'for warc file name (default "VC")', default='VC')
+    op.add_option('-v', '--verbose', action='store_const', dest='loglevel',
+                  const=logging.DEBUG,
+                  default=logging.ERROR,
+                  help='enabled DEBUG-level logging (default ERROR)')
+    
+    options, args = op.parse_args()
 
-    server = HTTPProxyServer()
+    logging.basicConfig(level=options.loglevel)
+
+    server = HTTPProxyServer(prefix=options.prefix)
     try:
         server.serve_forever()
     finally:
