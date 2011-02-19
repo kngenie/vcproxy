@@ -9,6 +9,7 @@ from Queue import Queue, Empty
 import logging
 import threading
 import warcwriter
+from cStringIO import StringIO
 
 class Tee(object):
     """A filelike that writes it's data to two others"""
@@ -28,6 +29,35 @@ def capture(url):
     if m:
         return ()
         
+class Capture(object):
+    '''A file-like that writes incoming data to both file-like given
+    and WarcWriter, doing buffering when content-length is unknown.'''
+    def __init__(self, f1, start, headers, clen, compresslevel,
+                 **kwds):
+        self.f1 = f1
+        self.start_record = start
+        self.clen = clen
+        if self.clen is None:
+            self.w = StringIO()
+            self.headers = headers
+            self.compresslevel = compresslevel
+            self.kwds = kwds
+        else:
+            self.w = self.start_record(headers, clen, compresslevel, **kwds)
+            
+    def write(self, data):
+        self.f1.write(data)
+        self.w.write(data)
+        
+    def close(self):
+        if self.clen is None:
+            data = self.w.getvalue()
+            w = self.start_record(self.headers, len(data), self.compresslevel,
+                                  **self.kwds)
+            w.write(data)
+            w.close()
+        self.w.close()
+        
 class HTTPProxyHandler(prox.HTTPProxyHandler):
     def get_writer(self):
         ww = getattr(self, 'ww', None)
@@ -41,35 +71,31 @@ class HTTPProxyHandler(prox.HTTPProxyHandler):
             self.ww = None
         
     def forward_request_body(self, f1, f2, contentlength):
-        if contentlength is not None:
+        save, clv = self.server.should_save(
+            True, self.url, self.requestheaders)
+        if save:
             ww = self.get_writer()
-            f3 = ww.start_request(self.requestheaders, contentlength,
-                                  uri=self.url)
-            f2 = Tee(f2, f3)
-        else:
-            ww = None
+            f2 = Capture(f2, ww.start_request, self.requestheaders,
+                         contentlength, compresslevel=clv,
+                         uri=self.url)
+        else: ww = None
         self.forward(f1, f2, contentlength)
-        if ww:
-            f3.close()
+        if ww: f2.close()
         
     def forward_response_body(self, f1, f2, contentlength):
         '''forwards the content to the client and saves video streams in
         level-0 compression WARC file'''
         try:
-            ct = self.responseheaders.get('Content-Type')
-            if ct: ct = ct[0]
-            if contentlength is not None and ct and ct.startswith('video/flash'):
+            save, clv = self.server.should_save(
+                False, self.url, self.responseheaders)
+            if save:
                 ww = self.get_writer()
-                f3 = ww.start_response(self.responseheaders, contentlength,
-                                       compresslevel=0,
-                                       uri=self.url)
-                f2 = Tee(f2, f3)
-            else:
-                self.put_writer()
-                ww = None
+                f2 = Capture(f2, ww.start_response, self.responseheaders,
+                             contentlength, compresslevel=clv,
+                             uri=self.url)
+            else: self.put_writer(); ww = None
             self.forward(f1, f2, contentlength)
-            if ww:
-                f3.close()
+            if ww: f2.close()
         finally:
             self.put_writer()
 
@@ -98,6 +124,19 @@ class HTTPProxyServer(prox.HTTPProxyServer):
     def close_writers(self):
         for w in self.writers:
             w.close()
+
+    # TODO: Y!V specific. make this configurable with XML or something.
+    def should_save(self, request, url, headers):
+        ct = headers.get('Content-Type', [''])[0]
+        if request:
+            if re.match(r'http://video\.yahoo\.com/watch/\d+/\d+', url):
+                return (True, 9)
+        else:
+            if ct.startswith('video/flash'):
+                return (True, 0)
+            if re.match(r'http://.*\.yahoo\.com/videoAPI/', url):
+                return (True, 9)
+        return (False, 0)
 
 if __name__ == '__main__':
     from optparse import OptionParser

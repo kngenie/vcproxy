@@ -52,6 +52,7 @@ class WarcWriter(object):
             self.filename = None
             
     def check_size(self):
+        if self.file is None: return
         p = self.file.tell()
         if p > self.SPLIT_SIZE:
             self.finish_warc()

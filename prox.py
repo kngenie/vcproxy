@@ -24,6 +24,7 @@ import socket
 from urlparse import urlparse
 import logging
 from collections import defaultdict
+from cStringIO import StringIO
 
 logger = logging
 
@@ -71,7 +72,7 @@ class HTTPProxyHandler(SocketServer.StreamRequestHandler):
     def forward(self, f1, f2, maxlen=0):
         """forward maxlen bytes from f1 to f2"""
         logger.debug("forwarding %r bytes", maxlen)
-        left = maxlen or 1000000000
+        left = maxlen if maxlen is not None else 1000000000
         while left:
             data = f1.read(min(left, 1024))
             if not data:
@@ -125,6 +126,9 @@ class HTTPProxyHandler(SocketServer.StreamRequestHandler):
                 self.forward_request_body(self.rfile, request,
                         int(self.requestheaders["Content-Length"][0]))
                 sock.shutdown(socket.SHUT_WR)
+            elif method in ('GET'):
+                self.forward_request_body(self.rfile, StringIO(), 0)
+                #sock.shutdown(socket.SHUT_WR)
             if method == "CONNECT":
                 self.handle_connect()
                 continue
