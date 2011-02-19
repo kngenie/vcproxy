@@ -6,8 +6,22 @@ import uuid
 import __builtin__
 import cStringIO
 
+class WarcRecordWriter(object):
+    '''wrapper around GzipFile that puts padding at the end
+    of record. only have minimum interface for a file-like.'''
+    def __init__(self, w):
+        self.w = w
+    def write(self, *args):
+        self.w.write(*args)
+    def close(self):
+        self.w.write('\r\n'*4)
+        # GzipFile in Python 2.6 does not flush underlining fileobj upon
+        # close(). So I'm calling flush() on it first.
+        self.w.flush()
+        self.w.close()
+
 class WarcWriter(object):
-    SPLIT_SIZE = 1024**3 # 1GB
+    SPLIT_SIZE = 1000**3 # 1GiB
 
     def __init__(self, prefix, compresslevel=9, metadata={}):
         self.prefix = prefix
@@ -130,7 +144,7 @@ class WarcWriter(object):
         self.start_record(w, 'response', clen + len(hs) + 2, kwds)
         w.write(hs)
         w.write('\r\n')
-        return w
+        return WarcRecordWriter(w)
 
     def start_request(self, headers, clen, compresslevel=None, **kwds):
         '''start new request record, write out request headers, and
@@ -143,7 +157,7 @@ class WarcWriter(object):
         self.start_record(w, 'request', clen + len(hs) + 2, kwds)
         w.write(hs)
         w.write('\r\n')
-        return w
+        return WarcRecordWriter(w)
         
     def close(self):
         self.finish_warc()

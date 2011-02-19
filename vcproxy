@@ -29,39 +29,49 @@ def capture(url):
         return ()
         
 class HTTPProxyHandler(prox.HTTPProxyHandler):
+    def get_writer(self):
+        ww = getattr(self, 'ww', None)
+        if ww is None: ww = self.ww = self.server.get_writer()
+        return ww
+    def put_writer(self):
+        ww = getattr(self, 'ww', None)
+        if ww:
+            ww.check_size()
+            self.server.put_writer(ww)
+            self.ww = None
+        
     def forward_request_body(self, f1, f2, contentlength):
         if contentlength is not None:
-            self.ww = self.server.get_writer()
-            f3 = self.ww.start_request(self.requestheaders, contentlength,
-                                       uri=self.url)
+            ww = self.get_writer()
+            f3 = ww.start_request(self.requestheaders, contentlength,
+                                  uri=self.url)
             f2 = Tee(f2, f3)
         else:
-            self.ww = None
+            ww = None
         self.forward(f1, f2, contentlength)
-        if self.ww:
-            f3.write('\r\n'*4)
+        if ww:
             f3.close()
         
     def forward_response_body(self, f1, f2, contentlength):
         '''forwards the content to the client and saves video streams in
         level-0 compression WARC file'''
-        ct = self.responseheaders.get('Content-Type')
-        if ct: ct = ct[0]
-        if contentlength is not None and ct and ct.startswith('video/flash'):
-            if not hasattr(self, 'ww') or self.ww is None:
-                self.ww = self.server.get_writer()
-            f3 = self.ww.start_response(self.responseheaders, contentlength,
-                                        compresslevel=0,
-                                        uri=self.url)
-            f2 = Tee(f2, f3)
-        else:
-            self.ww = None
-        self.forward(f1, f2, contentlength)
-        if self.ww:
-            f3.write('\r\n'*4)
-            f3.close()
-            self.server.put_writer(self.ww)
-            self.ww = None
+        try:
+            ct = self.responseheaders.get('Content-Type')
+            if ct: ct = ct[0]
+            if contentlength is not None and ct and ct.startswith('video/flash'):
+                ww = self.get_writer()
+                f3 = ww.start_response(self.responseheaders, contentlength,
+                                       compresslevel=0,
+                                       uri=self.url)
+                f2 = Tee(f2, f3)
+            else:
+                self.put_writer()
+                ww = None
+            self.forward(f1, f2, contentlength)
+            if ww:
+                f3.close()
+        finally:
+            self.put_writer()
 
 class HTTPProxyServer(prox.HTTPProxyServer):
     def __init__(self, prefix='res'):
