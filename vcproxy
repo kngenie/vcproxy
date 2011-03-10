@@ -136,6 +136,8 @@ class HTTPProxyServer(prox.HTTPProxyServer):
                 return (True, 0)
             if re.match(r'http://.*\.yahoo\.com/videoAPI/', url):
                 return (True, 9)
+            if re.match(r'http://cosmos.bcst.yahoo.com/', url):
+                return (True, 9)
         return (False, 0)
 
 if __name__ == '__main__':
