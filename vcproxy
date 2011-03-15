@@ -101,7 +101,7 @@ class HTTPProxyHandler(prox.HTTPProxyHandler):
 
 class HTTPProxyServer(prox.HTTPProxyServer):
     def __init__(self, prefix='res'):
-        prox.HTTPProxyServer.__init__(self, ("0.0.0.0", 8080),
+        prox.HTTPProxyServer.__init__(self, ("127.0.0.1", 8080),
                                       HTTPProxyHandler)
         self.prefix = prefix
         self.writers_lock = threading.RLock()
