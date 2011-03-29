@@ -133,7 +133,8 @@ class HTTPProxyHandler(SocketServer.StreamRequestHandler):
                 self.handle_connect()
                 continue
             # forward status line
-            self.wfile.write(request.readline())
+            self.statusline = request.readline()
+            self.wfile.write(self.statusline)
             self.responseheaders = self.parse_header(request)
             self.write_headers(self.wfile, self.responseheaders)
             try:

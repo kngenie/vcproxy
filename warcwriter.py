@@ -61,7 +61,7 @@ class WarcWriter(object):
     def write_warcinfo(self):
         w = GzipFile(fileobj=self.file, mode='wb',
                      compresslevel=self.compresslevel)
-        self.write_record(w, 'warcinfo', dict(body=self.metadata))
+        self.write_record(w, 'warcinfo', body=self.metadata)
         w.close() # does not close underlining file
         self.file.flush()
 
@@ -78,7 +78,7 @@ class WarcWriter(object):
         if hasattr(data, 'fileno'):
             return os.fstat(data.fileno).st_size
             
-    def start_record(self, w, type, clen, data):
+    def start_record(self, w, type, clen, uri=None, digest=None, ip=None):
         assert type in ('warcinfo', 'response', 'request', 'metadata'), \
             'bad type %s' % type
         content_type = dict(warcinfo='application/warc-fields',
@@ -94,22 +94,21 @@ class WarcWriter(object):
         w.write('WARC-Record-ID: %s\r\n' % rid)
         w.write('Content-Type: %s\r\n' % content_type)
         if type == 'response' or type == 'request':
-            if 'uri' in data:
-                w.write('WARC-Target-URI: %s\r\n' % data['uri'])
+            if uri is not None:
+                w.write('WARC-Target-URI: %s\r\n' % uri)
         if type == 'response':
-            if 'digest' in data:
-                w.write('WARC-Payload-Digest: %s\r\n' % data['digest'])
-            if 'ip' in data:
-                w.write('WARC-IP-Address: %s\r\n' % data['ip'])
+            if digest is not None:
+                w.write('WARC-Payload-Digest: %s\r\n' % digest)
+            if ip is not None:
+                w.write('WARC-IP-Address: %s\r\n' % ip)
         w.write('Content-Length: %d\r\n' % clen)
         w.write('\r\n')
 
-    def write_record(self, w, type, data):
-        body = data.get('body')
+    def write_record(self, w, type, body, **data):
         assert body is not None, 'data must have "body"'
         if isinstance(body, dict):
             body = ''.join("%s: %s\r\n" % item for item in body.iteritems())
-        self.start_record(w, type, self.sizeof(body), data)
+        self.start_record(w, type, self.sizeof(body), **data)
 
         if isinstance(body, basestring):
             w.write(body)
@@ -123,7 +122,7 @@ class WarcWriter(object):
         data = dict(body=body)
         data.update(**kwds)
         w = self.get_record_writer(compresslevel=compresslevel)
-        self.write_record(w, 'response', data)
+        self.write_record(w, 'response', body=body, **data)
 
     def write_headers(self, w, headers):
         if headers:
@@ -134,7 +133,8 @@ class WarcWriter(object):
                     for v1 in v:
                         w.write('%s: %s\r\n' % (k, v1))
         
-    def start_response(self, headers, clen, compresslevel=None, **kwds):
+    def start_response(self, headers, clen, statusline, compresslevel=None,
+                       **kwds):
         '''start new response record, write out response headers, and
         return a writer for writing len bytes of response body.
         be sure to call close() on returned writer.'''
@@ -142,7 +142,10 @@ class WarcWriter(object):
         h = cStringIO.StringIO()
         self.write_headers(h, headers)
         hs = h.getvalue(); h.close()
-        self.start_record(w, 'response', clen + len(hs) + 2, kwds)
+        statusline = statusline.rstrip() + '\r\n'
+        self.start_record(w, 'response', clen + len(statusline) + len(hs) + 2,
+                          **kwds)
+        w.write(statusline)
         w.write(hs)
         w.write('\r\n')
         return WarcRecordWriter(w)
@@ -155,7 +158,7 @@ class WarcWriter(object):
         h = cStringIO.StringIO()
         self.write_headers(h, headers)
         hs = h.getvalue(); h.close()
-        self.start_record(w, 'request', clen + len(hs) + 2, kwds)
+        self.start_record(w, 'request', clen + len(hs) + 2, **kwds)
         w.write(hs)
         w.write('\r\n')
         return WarcRecordWriter(w)

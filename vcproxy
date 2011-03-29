@@ -32,18 +32,16 @@ def capture(url):
 class Capture(object):
     '''A file-like that writes incoming data to both file-like given
     and WarcWriter, doing buffering when content-length is unknown.'''
-    def __init__(self, f1, start, headers, clen, compresslevel,
-                 **kwds):
+    def __init__(self, f1, start, headers, clen, **kwds):
         self.f1 = f1
         self.start_record = start
         self.clen = clen
         if self.clen is None:
             self.w = StringIO()
             self.headers = headers
-            self.compresslevel = compresslevel
             self.kwds = kwds
         else:
-            self.w = self.start_record(headers, clen, compresslevel, **kwds)
+            self.w = self.start_record(headers, clen, **kwds)
             
     def write(self, data):
         self.f1.write(data)
@@ -52,8 +50,7 @@ class Capture(object):
     def close(self):
         if self.clen is None:
             data = self.w.getvalue()
-            w = self.start_record(self.headers, len(data), self.compresslevel,
-                                  **self.kwds)
+            w = self.start_record(self.headers, len(data), **self.kwds)
             w.write(data)
             w.close()
         self.w.close()
@@ -92,7 +89,7 @@ class HTTPProxyHandler(prox.HTTPProxyHandler):
                 ww = self.get_writer()
                 f2 = Capture(f2, ww.start_response, self.responseheaders,
                              contentlength, compresslevel=clv,
-                             uri=self.url)
+                             uri=self.url, statusline=self.statusline)
             else: self.put_writer(); ww = None
             self.forward(f1, f2, contentlength)
             if ww: f2.close()
@@ -100,8 +97,8 @@ class HTTPProxyHandler(prox.HTTPProxyHandler):
             self.put_writer()
 
 class HTTPProxyServer(prox.HTTPProxyServer):
-    def __init__(self, prefix='res'):
-        prox.HTTPProxyServer.__init__(self, ("127.0.0.1", 8080),
+    def __init__(self, prefix='res', port=8080):
+        prox.HTTPProxyServer.__init__(self, ("127.0.0.1", port),
                                       HTTPProxyHandler)
         self.prefix = prefix
         self.writers_lock = threading.RLock()
@@ -150,12 +147,15 @@ if __name__ == '__main__':
                   const=logging.DEBUG,
                   default=logging.ERROR,
                   help='enables DEBUG-level logging (default ERROR)')
+    op.add_option('--port', action='store', dest='port', type='int',
+                  default=8080,
+                  help='port number to bind to')
     
     options, args = op.parse_args()
 
     logging.basicConfig(level=options.loglevel)
 
-    server = HTTPProxyServer(prefix=options.prefix)
+    server = HTTPProxyServer(prefix=options.prefix, port=options.port)
     try:
         server.serve_forever()
     finally:
