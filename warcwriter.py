@@ -5,6 +5,7 @@ from datetime import datetime
 import uuid
 import __builtin__
 import cStringIO
+import fcntl
 
 class WarcRecordWriter(object):
     '''wrapper around GzipFile that puts padding at the end
@@ -21,14 +22,8 @@ class WarcRecordWriter(object):
         self.w.close()
 
 class WarcWriter(object):
-    SPLIT_SIZE = 1000**3 # 1GiB
-
-    def __init__(self, prefix, compresslevel=9, metadata={}):
-        self.prefix = prefix
-        if self.prefix is None or self.prefix == '':
-            raise ValueError, 'prefix must not be None or empty string'
-        self.seq = 0
-        self.filename = None
+    def __init__(self, compresslevel=9, metadata={}, filename=None):
+        self.filename = filename
         self.file = None
         self.compresslevel = int(compresslevel)
         self.metadata = dict(
@@ -37,12 +32,18 @@ class WarcWriter(object):
         self.metadata.update(**metadata)
 
     def startwarc(self):
-        self.filename = '%s-%05d.warc.gz' % (self.prefix, self.seq)
+        if self.filename is None:
+            raise ValueError, 'filename is not supplied'
         self.file = __builtin__.open(self.filename + '.open', 'wb')
+        fcntl.flock(self.file, fcntl.LOCK_EX)
         self.write_warcinfo()
 
     def finish_warc(self):
+        '''close current WARC file, unlock and rename it, and resets
+        file and filename. next call to get_record_writer will fail
+        until new filename is supplied.'''
         if self.file:
+            fcntl.flock(self.file, fcntl.LOCK_UN)
             self.file.close()
             try:
                 os.rename(self.filename + '.open', self.filename)
@@ -51,13 +52,6 @@ class WarcWriter(object):
             self.file = None
             self.filename = None
             
-    def check_size(self):
-        if self.file is None: return
-        p = self.file.tell()
-        if p > self.SPLIT_SIZE:
-            self.finish_warc()
-            self.seq += 1
-
     def write_warcinfo(self):
         w = GzipFile(fileobj=self.file, mode='wb',
                      compresslevel=self.compresslevel)
@@ -78,20 +72,23 @@ class WarcWriter(object):
         if hasattr(data, 'fileno'):
             return os.fstat(data.fileno).st_size
             
-    def start_record(self, w, type, clen, uri=None, digest=None, ip=None):
+    def start_record(self, w, type, clen, uri=None, digest=None, ip=None,
+                     record_id=None):
+        '''writes WARC record headers'''
         assert type in ('warcinfo', 'response', 'request', 'metadata'), \
             'bad type %s' % type
         content_type = dict(warcinfo='application/warc-fields',
                             response='application/http; msgtype=response',
                             request='application/http; msgtype=request',
                             metadata='application/warc-fields')[type]
-        rid = '<url:uuid:%s>' % uuid.uuid1()
+        if record_id is None:
+            record_id = '<url:uuid:%s>' % uuid.uuid1()
         w.write('WARC/1.0\r\n')
         w.write('WARC-Type: %s\r\n' % type)
         w.write('WARC-Date: %s\r\n' % datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'))
         if type == 'warcinfo':
             w.write('WARC-Filename: %s\r\n' % self.filename)
-        w.write('WARC-Record-ID: %s\r\n' % rid)
+        w.write('WARC-Record-ID: %s\r\n' % record_id)
         w.write('Content-Type: %s\r\n' % content_type)
         if type == 'response' or type == 'request':
             if uri is not None:
@@ -119,10 +116,8 @@ class WarcWriter(object):
         w.write('\r\n\r\n\r\n\r\n')
         
     def write_response(self, body, compresslevel=None, **kwds):
-        data = dict(body=body)
-        data.update(**kwds)
         w = self.get_record_writer(compresslevel=compresslevel)
-        self.write_record(w, 'response', body=body, **data)
+        self.write_record(w, 'response', body=body, **kwds)
 
     def write_headers(self, w, headers):
         if headers:
@@ -150,7 +145,8 @@ class WarcWriter(object):
         w.write('\r\n')
         return WarcRecordWriter(w)
 
-    def start_request(self, headers, clen, compresslevel=None, **kwds):
+    def start_request(self, headers, clen, requestline, compresslevel=None,
+                      **kwds):
         '''start new request record, write out request headers, and
         return a writer for writing len bytes of request body.
         be sure to call close() on returned writer.'''
@@ -158,7 +154,10 @@ class WarcWriter(object):
         h = cStringIO.StringIO()
         self.write_headers(h, headers)
         hs = h.getvalue(); h.close()
-        self.start_record(w, 'request', clen + len(hs) + 2, **kwds)
+        requestline = requestline.rstrip() + '\r\n'
+        self.start_record(w, 'request', clen + len(requestline) + len(hs) + 2,
+                          **kwds)
+        w.write(requestline)
         w.write(hs)
         w.write('\r\n')
         return WarcRecordWriter(w)
@@ -166,5 +165,42 @@ class WarcWriter(object):
     def close(self):
         self.finish_warc()
 
+class RollingWarcWriter(WarcWriter):
+    '''extension of WarcWriter that automatically roll over to next
+    WARC file at predefined split size. Supply file name generator
+    in fngen parameter.'''
+    STANDARD_SPLIT_SIZE = 1024**3 # 1GB
+
+    def __init__(self, compresslevel=9, metadata={},
+                 fngen=None, splitsize=None, **kwds):
+        WarcWriter.__init__(self, compresslevel, metadata)
+        self.splitsize = splitsize or self.STANDARD_SPLIT_SIZE
+        if fngen is None:
+            def prefix_seq(prefix, seq=0):
+                if prefix is None or prefix == '':
+                    raise ValueError, 'prefix must be non-empty string'
+                while 1:
+                    yield '%s-%05d.warc.gz' % (prefix, seq)
+                    seq += 1
+            fngen = prefix_seq(kwds.get('prefix'))
+        self.__fngen = fngen
+    
+    def makefilename(self):
+        return next(self.__fngen)
+
+    def check_size(self):
+        if self.file and self.file.tell() > self.splitsize:
+            self.finish_warc()
+
+    # override
+    def startwarc(self):
+        self.filename = self.makefilename()
+        WarcWriter.startwarc(self)
+
+    # override
+    def get_record_writer(self, compresslevel=None):
+        self.check_size()
+        return WarcWriter.get_record_writer(self, compresslevel)
+
 def open(prefix, compresslevel=9, metadata={}):
-    return WarcWriter(prefix, compresslevel, metadata)
+    return RollingWarcWriter(compresslevel, metadata, prefix=prefix)

@@ -86,13 +86,13 @@ class HTTPProxyHandler(SocketServer.StreamRequestHandler):
     def request_url(self, method, rawurl, version):
         """create a new socket and write the requestline"""
         url = urlparse(rawurl)
-        request = "%s %s%s %s\r\n" % (method, url.path or "/",
+        self.requestline = "%s %s%s %s\r\n" % (method, url.path or "/",
                 url.query and "?" + url.query or "", version)
-        logging.debug("request_url(%r, %r, %r) request: %r", method, rawurl, version, request)
+        logging.debug("request_url(%r, %r, %r) request: %r", method, rawurl, version, self.requestline)
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         s.connect((url.hostname, int(url.port or 80)))
-        s.sendall(request)
+        s.sendall(self.requestline)
         return s, s.makefile("rwb", 0)
 
     def __repr__(self):

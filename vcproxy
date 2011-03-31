@@ -74,7 +74,7 @@ class HTTPProxyHandler(prox.HTTPProxyHandler):
             ww = self.get_writer()
             f2 = Capture(f2, ww.start_request, self.requestheaders,
                          contentlength, compresslevel=clv,
-                         uri=self.url)
+                         uri=self.url, requestline=self.requestline)
         else: ww = None
         self.forward(f1, f2, contentlength)
         if ww: f2.close()
@@ -111,8 +111,8 @@ class HTTPProxyServer(prox.HTTPProxyServer):
             return self.writers_queue.get(True, 0.05)
         except Empty:
             with self.writers_lock:
-                w = warcwriter.open('%s-%s-%04d' % (self.prefix, os.getpid(),
-                                                    len(self.writers)))
+                w = RollingWarcWriter('%s-%s-%04d' % (self.prefix, os.getpid(),
+                                                      len(self.writers)))
                 self.writers.append(w)
                 return w
     def put_writer(self, w):
