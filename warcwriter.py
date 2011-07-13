@@ -15,14 +15,15 @@ class WarcRecordWriter(object):
     def write(self, *args):
         self.w.write(*args)
     def close(self):
-        self.w.write('\r\n'*4)
+        self.w.write('\r\n'*2)
         # GzipFile in Python 2.6 does not flush underlining fileobj upon
         # close(). So I'm calling flush() on it first.
         self.w.flush()
         self.w.close()
 
 class WarcWriter(object):
-    def __init__(self, compresslevel=9, metadata={}, filename=None):
+    def __init__(self, compresslevel=9, metadata={}, filename=None,
+                 warcinfo=True):
         self.filename = filename
         self.file = None
         self.compresslevel = int(compresslevel)
@@ -30,13 +31,15 @@ class WarcWriter(object):
             format='WARC File Format 1.0',
             conformsTo='http://bibnum.bnf.fr/WARC/WARC_ISO_28500_version1_latestdraft.pdf')
         self.metadata.update(**metadata)
+        self.warcinfo = warcinfo
 
     def startwarc(self):
         if self.filename is None:
             raise ValueError, 'filename is not supplied'
         self.file = __builtin__.open(self.filename + '.open', 'wb')
         fcntl.flock(self.file, fcntl.LOCK_EX)
-        self.write_warcinfo()
+        if self.warcinfo:
+            self.write_warcinfo()
 
     def finish_warc(self):
         '''close current WARC file, unlock and rename it, and resets
@@ -113,7 +116,7 @@ class WarcWriter(object):
             # TODO: copy data
             pass
 
-        w.write('\r\n\r\n\r\n\r\n')
+        w.write('\r\n\r\n')
         
     def write_response(self, body, compresslevel=None, **kwds):
         w = self.get_record_writer(compresslevel=compresslevel)
