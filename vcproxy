@@ -88,14 +88,37 @@ class HTTPProxyHandler(prox.HTTPProxyHandler):
         finally:
             self.put_writer()
 
+class WarcFilenameGenerator(object):
+    '''Heritrix-compatible WARC filename generator'''
+    def __init__(self,prefix, port):
+        self.prefix = prefix
+        self.seq = 0
+        self.lock = threading.Lock()
+        self.host = os.uname()[1]
+        self.pid = os.getpid()
+
+        self.template = (self.prefix + '-%s%03d-%05d-' + str(self.pid) +
+                         '~' + self.host + '~' + str(port) + '.warc.gz')
+    def __iter__(self):
+        return self
+    def next(self):
+        with self.lock:
+            seq = self.seq
+            self.seq += 1
+        now = datetime.utcnow()
+        ts14 = now.strftime('%Y%m%d%H%M%S')
+        return self.template % (ts14, now.microsecond/1000, seq)
+
 class HTTPProxyServer(prox.HTTPProxyServer):
     def __init__(self, prefix='res', address='127.0.0.1', port=8080):
         prox.HTTPProxyServer.__init__(self, (address, port),
                                       HTTPProxyHandler)
+        self.port = port
         self.prefix = prefix
         self.writers_lock = threading.RLock()
         self.writers = []
         self.writers_queue = Queue()
+        self.fngen = WarcFilenameGenerator(self.prefix, self.port)
 
     def get_writer(self):
         # wait 50ms
@@ -103,8 +126,7 @@ class HTTPProxyServer(prox.HTTPProxyServer):
             return self.writers_queue.get(True, 0.05)
         except Empty:
             with self.writers_lock:
-                w = RollingWarcWriter(prefix='%s-%s-%04d' % (
-                        self.prefix, os.getpid(), len(self.writers)))
+                w = RollingWarcWriter(fngen=self.fngen)
                 self.writers.append(w)
                 return w
     def put_writer(self, w):
