@@ -110,11 +110,13 @@ class WarcFilenameGenerator(object):
         return self.template % (ts14, now.microsecond/1000, seq)
 
 class HTTPProxyServer(prox.HTTPProxyServer):
-    def __init__(self, prefix='res', address='127.0.0.1', port=8080):
+    def __init__(self, prefix='res', address='127.0.0.1', port=8080,
+                 maxwarcs=0):
         prox.HTTPProxyServer.__init__(self, (address, port),
                                       HTTPProxyHandler)
         self.port = port
         self.prefix = prefix
+        self.maxwarcs = maxwarcs
         self.writers_lock = threading.RLock()
         self.writers = []
         self.writers_queue = Queue()
@@ -125,6 +127,9 @@ class HTTPProxyServer(prox.HTTPProxyServer):
         try:
             return self.writers_queue.get(True, 0.05)
         except Empty:
+            if self.maxwarcs and len(self.writers) >= self.maxwarcs:
+                # if reached maxwarcs, wait for a writer indefinitely.
+                return self.writers_queue.get()
             with self.writers_lock:
                 w = RollingWarcWriter(fngen=self.fngen)
                 self.writers.append(w)
@@ -180,7 +185,8 @@ if __name__ == '__main__':
     if address == '*' or address == 'all':
         address = '0.0.0.0'
     server = HTTPProxyServer(prefix=options.prefix,
-                             address=address, port=options.port)
+                             address=address, port=options.port,
+                             maxwarcs=options.maxwarcs)
     try:
         server.serve_forever()
     finally:
