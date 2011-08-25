@@ -8,7 +8,7 @@ from datetime import datetime
 from Queue import Queue, Empty
 import logging
 import threading
-import warcwriter
+from warcwriter import RollingWarcWriter
 from cStringIO import StringIO
 
 class Tee(object):
@@ -21,14 +21,6 @@ class Tee(object):
         self.f1.write(data)
         self.f2.write(data)
 
-def capture(url):
-    m = re.match(r'http://proxy.api.video.yahoo.com/videoAPI/.*/Video\.([a-zA-Z0-9]+)\?.*\&ID=(\d+)', url)
-    if m:
-        return (m.group(2), m.group(1))
-    m = re.match(r'http://video.yahoo.com/ws/.*', url)
-    if m:
-        return ()
-        
 class Capture(object):
     '''A file-like that writes incoming data to both file-like given
     and WarcWriter, doing buffering when content-length is unknown.'''
@@ -97,8 +89,8 @@ class HTTPProxyHandler(prox.HTTPProxyHandler):
             self.put_writer()
 
 class HTTPProxyServer(prox.HTTPProxyServer):
-    def __init__(self, prefix='res', port=8080):
-        prox.HTTPProxyServer.__init__(self, ("127.0.0.1", port),
+    def __init__(self, prefix='res', address='127.0.0.1', port=8080):
+        prox.HTTPProxyServer.__init__(self, (address, port),
                                       HTTPProxyHandler)
         self.prefix = prefix
         self.writers_lock = threading.RLock()
@@ -111,8 +103,8 @@ class HTTPProxyServer(prox.HTTPProxyServer):
             return self.writers_queue.get(True, 0.05)
         except Empty:
             with self.writers_lock:
-                w = RollingWarcWriter('%s-%s-%04d' % (self.prefix, os.getpid(),
-                                                      len(self.writers)))
+                w = RollingWarcWriter(prefix='%s-%s-%04d' % (
+                        self.prefix, os.getpid(), len(self.writers)))
                 self.writers.append(w)
                 return w
     def put_writer(self, w):
@@ -122,20 +114,20 @@ class HTTPProxyServer(prox.HTTPProxyServer):
         for w in self.writers:
             w.close()
 
-    # TODO: Y!V specific. make this configurable with XML or something.
     def should_save(self, request, url, headers):
-        ct = headers.get('Content-Type', [''])[0]
-        if request:
-            if re.match(r'http://video\.yahoo\.com/watch/\d+/\d+', url):
-                return (True, 9)
-        else:
-            if ct.startswith('video/flash'):
-                return (True, 0)
-            if re.match(r'http://.*\.yahoo\.com/videoAPI/', url):
-                return (True, 9)
-            if re.match(r'http://cosmos.bcst.yahoo.com/', url):
-                return (True, 9)
-        return (False, 0)
+        return (True, 9)
+        # ct = headers.get('Content-Type', [''])[0]
+        # if request:
+        #     if re.match(r'http://video\.yahoo\.com/watch/\d+/\d+', url):
+        #         return (True, 9)
+        # else:
+        #     if ct.startswith('video/flash'):
+        #         return (True, 0)
+        #     if re.match(r'http://.*\.yahoo\.com/videoAPI/', url):
+        #         return (True, 9)
+        #     if re.match(r'http://cosmos.bcst.yahoo.com/', url):
+        #         return (True, 9)
+        # return (False, 0)
 
 if __name__ == '__main__':
     from optparse import OptionParser
@@ -147,15 +139,26 @@ if __name__ == '__main__':
                   const=logging.DEBUG,
                   default=logging.ERROR,
                   help='enables DEBUG-level logging (default ERROR)')
-    op.add_option('--port', action='store', dest='port', type='int',
+    op.add_option('-b', '--bind', action='store', dest='bind',
+                  default='127.0.0.1',
+                  help='IP address to bind to. loopback only by default.')
+    op.add_option('-n', '--port', action='store', dest='port', type='int',
                   default=8080,
                   help='port number to bind to')
+    op.add_option('-w', '--max-warcs', action='store', dest='maxwarcs',
+                  type='int', default=0,
+                  help='max number of WARCs to open concurrently. 0 means'
+                  ' vcproxy may open as many WARCs as necessary (default)')
     
     options, args = op.parse_args()
 
     logging.basicConfig(level=options.loglevel)
 
-    server = HTTPProxyServer(prefix=options.prefix, port=options.port)
+    address = options.bind
+    if address == '*' or address == 'all':
+        address = '0.0.0.0'
+    server = HTTPProxyServer(prefix=options.prefix,
+                             address=address, port=options.port)
     try:
         server.serve_forever()
     finally:
