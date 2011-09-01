@@ -10,6 +10,9 @@ import logging
 import threading
 from warcwriter import RollingWarcWriter
 from cStringIO import StringIO
+from base64 import b32encode
+from hashlib import sha1
+from tempfile import SpooledTemporaryFile
 
 class Tee(object):
     """A filelike that writes it's data to two others"""
@@ -22,14 +25,16 @@ class Tee(object):
         self.f2.write(data)
 
 class Capture(object):
-    '''A file-like that writes incoming data to both file-like given
-    and WarcWriter, doing buffering when content-length is unknown.'''
+    '''A file-like that writes incoming data stream to both the file-like
+       given and WarcWriter, doing buffering and computing content-hash
+       (if kwds has "digest" key)'''
     def __init__(self, f1, start, headers, clen, **kwds):
         self.f1 = f1
         self.start_record = start
         self.clen = clen
-        if self.clen is None:
-            self.w = StringIO()
+        self.hash = sha1() if 'digest' in kwds else None
+        if self.clen is None or self.hash:
+            self.w = SpooledTemporaryFile(prefix='vcp')
             self.headers = headers
             self.kwds = kwds
         else:
@@ -38,12 +43,20 @@ class Capture(object):
     def write(self, data):
         self.f1.write(data)
         self.w.write(data)
+        if self.hash:
+            self.hash.update(data)
         
     def close(self):
-        if self.clen is None:
-            data = self.w.getvalue()
-            w = self.start_record(self.headers, len(data), **self.kwds)
-            w.write(data)
+        if self.clen is None or self.hash:
+            if self.hash:
+                self.kwds['digest'] = 'sha1:'+b32encode(self.hash.digest())
+            clen = self.w.tell()
+            self.w.seek(0, 0)
+            w = self.start_record(self.headers, clen, **self.kwds)
+            while 1:
+                data = self.w.read(4096)
+                if data == '': break
+                w.write(data)
             w.close()
         self.w.close()
         
@@ -81,7 +94,8 @@ class HTTPProxyHandler(prox.HTTPProxyHandler):
                 ww = self.get_writer()
                 f2 = Capture(f2, ww.start_response, self.responseheaders,
                              contentlength, compresslevel=clv,
-                             uri=self.url, statusline=self.statusline)
+                             uri=self.url, statusline=self.statusline,
+                             digest='')
             else: self.put_writer(); ww = None
             self.forward(f1, f2, contentlength)
             if ww: f2.close()
@@ -189,6 +203,9 @@ if __name__ == '__main__':
                              maxwarcs=options.maxwarcs)
     try:
         server.serve_forever()
+    except KeyboardInterrupt:
+        pass
     finally:
+        logging.info('closing WARCs')
         server.close_writers()
 
