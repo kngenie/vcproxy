@@ -19,8 +19,10 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+import sys
 import SocketServer
 import socket
+from select import select
 from urlparse import urlparse
 import logging
 from collections import defaultdict
@@ -72,7 +74,7 @@ class HTTPProxyHandler(SocketServer.StreamRequestHandler):
     def forward(self, f1, f2, maxlen=0):
         """forward maxlen bytes from f1 to f2"""
         logger.debug("forwarding %r bytes", maxlen)
-        left = maxlen if maxlen is not None else 1000000000
+        left = maxlen if maxlen is not None else sys.maxsize
         while left:
             data = f1.read(min(left, 1024))
             if not data:
@@ -106,12 +108,28 @@ class HTTPProxyHandler(SocketServer.StreamRequestHandler):
             raise
 
     def handle_connect(self):
+        logging.debug('handle_connect %s', self.url)
         host, port = self.url.split(":")
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         s.connect((host, int(port)))
-        while True:
-            r, w, x = select([self.request, s])
+        logging.debug('opened socket to %s:%s', host, port)
+        logging.debug('sending 200 response to the cilent')
+        res = 'HTTP/1.0 200 connection established\r\n\r\n'
+        self.request.sendall(res)
+        nclosed = 0
+        while nclosed < 2:
+            r, w, x = select([self.request, s], [], [])
+            for sock in r:
+                data = sock.recv(1024)
+                peer = s if sock == self.request else self.request
+                if data == '':
+                    logging.debug('closing %s', peer)
+                    peer.shutdown(socket.SHUT_WR)
+                    nclosed += 1
+                else:
+                    logging.debug('sending %d bytes to %s', len(data), peer)
+                    peer.sendall(data)
 
     def _handle(self):
         """Handle client requests"""
@@ -119,6 +137,9 @@ class HTTPProxyHandler(SocketServer.StreamRequestHandler):
             method, url, version = self.parse_request()
             self.url = url
             self.requestheaders = self.parse_header(self.rfile)
+            if method == 'CONNECT':
+                self.handle_connect()
+                continue
             self.requestheaders["Connection"] = ["close"]
             sock, request = self.request_url(method, url, version)
             self.write_headers(request, self.requestheaders)
@@ -129,9 +150,6 @@ class HTTPProxyHandler(SocketServer.StreamRequestHandler):
             elif method in ('GET'):
                 self.forward_request_body(self.rfile, StringIO(), 0)
                 #sock.shutdown(socket.SHUT_WR)
-            if method == "CONNECT":
-                self.handle_connect()
-                continue
             # forward status line
             self.statusline = request.readline()
             self.wfile.write(self.statusline)
