@@ -20,6 +20,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
 import sys
+import os
 import SocketServer
 import socket
 from select import select
@@ -141,7 +142,18 @@ class HTTPProxyHandler(SocketServer.StreamRequestHandler):
                 self.handle_connect()
                 continue
             self.requestheaders["Connection"] = ["close"]
-            sock, request = self.request_url(method, url, version)
+            try:
+                sock, request = self.request_url(method, url, version)
+            except socket.error as ex:
+                if ex.errno == os.errno.ETIMEDOUT:
+                    # TODO: some implementation returns non-standard 599
+                    # status.
+                    res = 'HTTP/1.1 504 Gateway Timeout\r\n\r\n'
+                    self.wfile.write(res)
+                else:
+                    res = 'HTTP/1.1 502 Bad Gateway\r\n\r\n'
+                    self.wfile.write(res)
+                break
             self.write_headers(request, self.requestheaders)
             if method in ("POST", "PUT") and "Content-Length" in self.requestheaders:
                 self.forward_request_body(self.rfile, request,
